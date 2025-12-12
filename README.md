@@ -63,7 +63,7 @@ const context = await kontext.getContext('Tell me about Alice', {
 
 ## Documentation
 
-See [kontext/README.md](./kontext/README.md) for full documentation.
+See [Kontext Docs](https://kontext-docs.vercel.app/) for full documentation.
 
 ## License
 
