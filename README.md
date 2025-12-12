@@ -67,5 +67,5 @@ See [kontext/README.md](./kontext/README.md) for full documentation.
 
 ## License
 
-MIT
+Apache License 2.0
 

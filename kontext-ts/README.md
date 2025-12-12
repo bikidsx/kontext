@@ -232,4 +232,4 @@ bun run examples/hotel-agent.ts
 
 ## License
 
-MIT
+Apache License 2.0
