@@ -1,0 +1,286 @@
+# Architecture
+
+## System Overview
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                         APPLICATION                            │
+│                                                                │
+│    ┌──────────────────────────────────────────────────────┐   │
+│    │                    KONTEXT SDK                        │   │
+│    │                                                       │   │
+│    │   add()          search()         getContext()        │   │
+│    │     │               │                  │              │   │
+│    │     ▼               ▼                  ▼              │   │
+│    │  ┌──────┐      ┌──────────┐      ┌──────────┐        │   │
+│    │  │Memory│      │  Search  │      │ Context  │        │   │
+│    │  │Adder │      │  Engine  │      │ Builder  │        │   │
+│    │  └──┬───┘      └────┬─────┘      └────┬─────┘        │   │
+│    │     │               │                  │              │   │
+│    │     └───────────────┼──────────────────┘              │   │
+│    │                     │                                 │   │
+│    │              ┌──────┴──────┐                          │   │
+│    │              │ FalkorClient │                          │   │
+│    │              └──────┬──────┘                          │   │
+│    └─────────────────────┼─────────────────────────────────┘   │
+│                          │                                     │
+└──────────────────────────┼─────────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────┐
+│                       FALKORDB                               │
+│                                                              │
+│   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│   │   Entities  │  │    Edges    │  │  Episodes   │         │
+│   │  (Nodes)    │  │(Relationships)│ │  (Events)   │         │
+│   │             │  │             │  │             │         │
+│   │ • uuid      │  │ • uuid      │  │ • uuid      │         │
+│   │ • name      │  │ • fact      │  │ • content   │         │
+│   │ • type      │  │ • name      │  │ • validAt   │         │
+│   │ • groupId   │  │ • validAt   │  │ • groupId   │         │
+│   │ • embedding │  │ • embedding │  │             │         │
+│   └─────────────┘  └─────────────┘  └─────────────┘         │
+│                                                              │
+│   ┌──────────────────────────────────────────────────────┐  │
+│   │                    INDICES                            │  │
+│   │  • Range Index (uuid, groupId, name)                  │  │
+│   │  • Vector Index (embeddings) [future]                 │  │
+│   │  • Full-Text Index (facts, content) [future]          │  │
+│   └──────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## Component Details
+
+### Memory Adder
+
+Responsible for ingesting new information:
+
+1. **Episode Creation**: Stores raw conversation
+2. **Entity Extraction**: LLM identifies entities (people, places, things)
+3. **Relationship Extraction**: LLM identifies connections between entities
+4. **Deduplication**: Merges with existing entities by name
+5. **Storage**: Writes to FalkorDB
+
+```typescript
+// Simplified flow
+async add(messages, options) {
+  const episode = await createEpisode(content);
+  const entities = await extractEntities(content);  // LLM call
+  const relations = await extractRelations(content, entities);  // LLM call
+  await storeEntities(entities);
+  await storeEdges(relations);
+}
+```
+
+### Search Engine
+
+Retrieves relevant context using multiple strategies:
+
+```typescript
+async search(query, options) {
+  // 1. Text-based entity matching
+  const entityMatches = await searchByEntityName(query);
+  
+  // 2. Get related edges
+  const edges = await getEdgesForEntities(entityMatches);
+  
+  // 3. Format results
+  return formatResults(edges);
+}
+```
+
+Future enhancements:
+- Vector similarity search on embeddings
+- Full-text search on facts
+- BFS graph traversal
+- RRF (Reciprocal Rank Fusion) for result merging
+
+### Context Builder
+
+Transforms search results into agent-ready context:
+
+```typescript
+async getContext(query, options) {
+  const results = await search(query, options);
+  return formatAsMarkdown(results);
+}
+
+// Output:
+// ## Known Facts
+// - John prefers quiet rooms
+// - John is allergic to shellfish
+//
+// ## Relationships
+// - John → BOOKED → Room 302
+// - John → ALLERGIC_TO → Shellfish
+```
+
+## Data Flow
+
+### Write Path (add)
+
+```
+User Message
+     │
+     ▼
+┌─────────────┐
+│  Normalize  │  Convert string to Message[]
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│   Episode   │  Store raw content
+│   Create    │  ~5ms
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│   Entity    │  LLM extraction
+│  Extraction │  ~2-5s
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│  Relation   │  LLM extraction
+│ Extraction  │  ~2-5s
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│   Store     │  FalkorDB writes
+│   Graph     │  ~10ms
+└─────────────┘
+```
+
+**Total: ~5-10s** (dominated by LLM calls)
+
+With `async: true`, user sees ~0ms (fire-and-forget).
+
+### Read Path (search/getContext)
+
+```
+Query
+  │
+  ▼
+┌─────────────┐
+│   Entity    │  Text matching
+│   Search    │  ~10ms
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│    Edge     │  Graph query
+│   Lookup    │  ~10ms
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│   Format    │  Build response
+│   Results   │  ~1ms
+└─────────────┘
+```
+
+**Total: ~20-30ms**
+
+## FalkorDB Schema
+
+### Node Labels
+
+```cypher
+// Entity nodes
+(:Entity {
+  uuid: STRING,
+  name: STRING,
+  type: STRING,
+  summary: STRING,
+  groupId: STRING,
+  createdAt: STRING,
+  updatedAt: STRING
+})
+
+// Episode nodes
+(:Episode {
+  uuid: STRING,
+  content: STRING,
+  source: STRING,
+  groupId: STRING,
+  validAt: STRING,
+  createdAt: STRING
+})
+```
+
+### Relationship Types
+
+```cypher
+// Entity relationships (facts)
+(:Entity)-[:RELATES_TO {
+  uuid: STRING,
+  name: STRING,
+  fact: STRING,
+  groupId: STRING,
+  episodes: LIST<STRING>,
+  validAt: STRING,
+  invalidAt: STRING,
+  createdAt: STRING
+}]->(:Entity)
+
+// Episode-Entity links
+(:Episode)-[:MENTIONS]->(:Entity)
+```
+
+### Indices
+
+```cypher
+CREATE INDEX FOR (e:Entity) ON (e.uuid)
+CREATE INDEX FOR (e:Entity) ON (e.groupId)
+CREATE INDEX FOR (e:Entity) ON (e.name)
+CREATE INDEX FOR (ep:Episode) ON (ep.uuid)
+CREATE INDEX FOR (ep:Episode) ON (ep.groupId)
+```
+
+## LLM Integration
+
+Kontext supports multiple LLM providers:
+
+| Provider | Model | Use Case |
+|----------|-------|----------|
+| **Gemini** | gemini-2.5-flash | Default (fast, cheap) |
+| OpenAI | gpt-4o-mini | Alternative |
+| Anthropic | claude-3.5-sonnet | High quality |
+| Ollama | llama3.2 | Local/private |
+
+LLM is used for:
+1. **Entity Extraction**: Identify nouns and their types
+2. **Relationship Extraction**: Identify connections and facts
+3. **Embeddings**: Generate vectors for semantic search (future)
+
+## Deployment Architecture
+
+### Development
+
+```bash
+# Single container
+docker run -p 6379:6379 falkordb/falkordb
+```
+
+### Production
+
+```yaml
+# docker-compose.yml
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - falkordb_data:/data
+    environment:
+      - FALKORDB_ARGS=--save 60 1
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+```
+
+For high availability, use FalkorDB Cloud or Redis Cluster mode.

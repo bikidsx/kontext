@@ -1,0 +1,306 @@
+# Research & Theory
+
+## Theoretical Foundations
+
+Kontext draws from several research areas in cognitive science, knowledge representation, and information retrieval.
+
+### Dual-Process Memory Theory
+
+Human memory operates through two complementary systems:
+
+1. **Episodic Memory**: Autobiographical events with temporal context
+2. **Semantic Memory**: General knowledge abstracted from experiences
+
+Kontext mirrors this architecture:
+
+| Human Memory | Kontext Equivalent |
+|--------------|-------------------|
+| Episodic Memory | Episodes (raw conversations) |
+| Semantic Memory | Entities + Edges (knowledge graph) |
+| Memory Consolidation | Extraction Pipeline |
+
+**Reference**: Tulving, E. (1972). Episodic and semantic memory.
+
+### Knowledge Graphs
+
+Knowledge graphs represent information as entities (nodes) and relationships (edges):
+
+```
+(Entity) --[Relationship]--> (Entity)
+(John)   --[WORKS_AT]------> (Google)
+```
+
+Kontext extends traditional knowledge graphs with:
+
+- **Temporal validity**: When facts are true
+- **Provenance tracking**: Which episodes support each fact
+- **Embedding vectors**: For semantic similarity
+
+**Reference**: Hogan, A. et al. (2021). Knowledge Graphs. ACM Computing Surveys.
+
+### Retrieval-Augmented Generation (RAG)
+
+RAG enhances LLM responses by retrieving relevant context:
+
+```
+Query → Retrieval → Context + Query → LLM → Response
+```
+
+Kontext improves on basic RAG by:
+
+1. **Structured retrieval**: Graph traversal, not just vector search
+2. **Temporal filtering**: Only current facts
+3. **Relationship context**: Connected entities, not isolated chunks
+
+**Reference**: Lewis, P. et al. (2020). Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks.
+
+---
+
+## Graph + Vector Fusion
+
+### The Complementarity Hypothesis
+
+Vector search and graph traversal find **different types of relevant information**:
+
+| Method | Finds | Misses |
+|--------|-------|--------|
+| Vector Search | Semantically similar | Structurally connected |
+| Graph Traversal | Structurally connected | Semantically similar |
+
+**Example**:
+
+```
+Query: "What should I know about John's stay?"
+
+Vector Search finds:
+- "John prefers quiet rooms" (semantic match to "stay")
+
+Graph Traversal finds:
+- John → BOOKED → Room 302
+- Room 302 → HAS_ISSUE → AC broken
+- John → COMPLAINED_ABOUT → AC
+
+Combined: Agent knows preferences AND current issues.
+```
+
+### Fusion Strategies
+
+#### Reciprocal Rank Fusion (RRF)
+
+Combines ranked lists by reciprocal rank:
+
+```
+RRF_score(d) = Σ 1 / (k + rank_i(d))
+```
+
+Where `k` is a constant (typically 60) and `rank_i(d)` is the rank of document `d` in list `i`.
+
+**Advantages**:
+- No score normalization needed
+- Robust to outliers
+- Simple to implement
+
+#### Maximal Marginal Relevance (MMR)
+
+Balances relevance and diversity:
+
+```
+MMR = argmax[λ · Sim(d, Q) - (1-λ) · max(Sim(d, d_i))]
+```
+
+Where `λ` controls relevance vs. diversity trade-off.
+
+**Use case**: Avoid redundant facts in context.
+
+---
+
+## Temporal Knowledge Representation
+
+### Point-Based Temporal Model
+
+Each fact has temporal bounds:
+
+```typescript
+interface TemporalFact {
+  fact: string;
+  validAt: Date;    // Start of validity
+  invalidAt?: Date; // End of validity (null = still true)
+}
+```
+
+### Temporal Query Semantics
+
+Query at time `t` returns facts where:
+
+```
+validAt ≤ t AND (invalidAt IS NULL OR invalidAt > t)
+```
+
+### Conflict Resolution
+
+When new facts contradict existing ones:
+
+1. **Supersession**: New fact invalidates old
+   - "Alice works at Google" → "Alice works at Microsoft"
+   - Old fact gets `invalidAt = now`
+
+2. **Coexistence**: Facts can both be true
+   - "Alice likes pizza" + "Alice likes sushi"
+   - Both remain valid
+
+3. **Correction**: Old fact was wrong
+   - Requires explicit deletion
+
+---
+
+## Entity Resolution
+
+### The Deduplication Problem
+
+Same entity may appear with different names:
+
+- "John Smith", "Mr. Smith", "John", "the guest"
+
+### Current Approach: Exact Match
+
+Kontext currently uses exact name matching:
+
+```typescript
+const existing = await findEntityByName(name, groupId);
+if (existing) {
+  return existing;  // Reuse
+} else {
+  return createNew();  // Create
+}
+```
+
+### Future: Embedding-Based Resolution
+
+Compare entity embeddings:
+
+```typescript
+const candidates = await vectorSearch(nameEmbedding, threshold=0.9);
+if (candidates.length > 0) {
+  return candidates[0];  // Likely same entity
+}
+```
+
+---
+
+## Extraction Quality
+
+### LLM-Based Extraction
+
+Kontext uses LLMs for entity and relationship extraction:
+
+**Advantages**:
+- Handles natural language variation
+- Understands context and coreference
+- No training data required
+
+**Challenges**:
+- Latency (~2-5s per extraction)
+- Cost (API calls)
+- Hallucination risk
+
+### Prompt Engineering
+
+Entity extraction prompt:
+
+```
+Extract entities from the conversation.
+Entity types: Guest, Room, Service, Complaint, ...
+
+Rules:
+- Extract exact names as mentioned
+- Classify into most appropriate type
+- Include implicit entities ("my room" → Room)
+```
+
+Relationship extraction prompt:
+
+```
+Given entities, extract relationships.
+Relationship types: BOOKED, PREFERS, COMPLAINED_ABOUT, ...
+
+Rules:
+- Each relationship connects two entities
+- Create human-readable fact for each
+- Include temporal context if mentioned
+```
+
+---
+
+## Performance Characteristics
+
+### Latency Analysis
+
+| Operation | Component | Latency |
+|-----------|-----------|---------|
+| **add()** | Episode creation | ~5ms |
+| | Entity extraction (LLM) | ~2-5s |
+| | Relation extraction (LLM) | ~2-5s |
+| | Graph writes | ~10ms |
+| | **Total** | **~5-10s** |
+| **search()** | Text matching | ~10ms |
+| | Graph traversal | ~10ms |
+| | Result formatting | ~1ms |
+| | **Total** | **~20-30ms** |
+
+### Optimization Strategies
+
+1. **Async Processing**: Fire-and-forget for `add()`
+2. **Batch Extraction**: Multiple messages in one LLM call
+3. **Caching**: Reuse embeddings for repeated queries
+4. **Index Optimization**: FalkorDB indices on hot paths
+
+---
+
+## Comparison with Related Work
+
+### vs. Mem0
+
+| Aspect | Mem0 | Kontext |
+|--------|------|---------|
+| Storage | Vector DB + Neo4j | FalkorDB (unified) |
+| Temporal | No | Yes |
+| Graph depth | 1-hop | Configurable |
+| Latency | ~50ms | ~30ms |
+
+### vs. Graphiti
+
+| Aspect | Graphiti | Kontext |
+|--------|----------|---------|
+| Language | Python | TypeScript |
+| Complexity | High | Low |
+| API | Complex | Simple (3 methods) |
+| Focus | General | Domain-specific |
+
+### vs. LangChain Memory
+
+| Aspect | LangChain | Kontext |
+|--------|-----------|---------|
+| Structure | Flat | Graph |
+| Extraction | Manual | Automatic |
+| Temporal | No | Yes |
+| Relationships | No | Yes |
+
+---
+
+## Future Research Directions
+
+1. **Embedding-based entity resolution**: Fuzzy matching for entities
+2. **Community detection**: Cluster related entities for summarization
+3. **Incremental extraction**: Update graph without full re-extraction
+4. **Cross-user knowledge**: Shared facts across tenants
+5. **Explanation generation**: Why was this context retrieved?
+
+---
+
+## References
+
+1. Tulving, E. (1972). Episodic and semantic memory. *Organization of Memory*.
+2. Hogan, A. et al. (2021). Knowledge Graphs. *ACM Computing Surveys*.
+3. Lewis, P. et al. (2020). Retrieval-Augmented Generation. *NeurIPS*.
+4. Robertson, S. & Zaragoza, H. (2009). The Probabilistic Relevance Framework: BM25 and Beyond. *Foundations and Trends in IR*.
+5. Cormack, G. et al. (2009). Reciprocal Rank Fusion. *SIGIR*.
