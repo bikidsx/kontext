@@ -1,0 +1,276 @@
+# Getting Started
+
+## Prerequisites
+
+- Node.js 20+
+- Docker (for FalkorDB)
+- Google API Key (for Gemini) or OpenAI API Key
+
+## Installation
+
+### 1. Start FalkorDB
+
+```bash
+docker run -d \
+  --name kontext-falkordb \
+  -p 6379:6379 \
+  -p 3000:3000 \
+  falkordb/falkordb:latest
+```
+
+Or use Docker Compose:
+
+```yaml
+# docker-compose.yml
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    ports:
+      - "6379:6379"
+      - "3000:3000"
+    volumes:
+      - falkordb_data:/data
+
+volumes:
+  falkordb_data:
+```
+
+```bash
+docker compose up -d
+```
+
+### 2. Install Kontext
+
+```bash
+npm install kontext
+# or
+bun add kontext
+```
+
+### 3. Configure Environment
+
+```bash
+# .env
+GOOGLE_API_KEY=your-gemini-api-key
+FALKORDB_HOST=localhost
+FALKORDB_PORT=6379
+```
+
+## Quick Start
+
+```typescript
+import 'dotenv/config';
+import { Kontext } from 'kontext';
+
+async function main() {
+  // Initialize
+  const kontext = new Kontext({
+    llm: { provider: 'gemini', model: 'gemini-2.5-flash' }
+  });
+
+  // Add memory
+  await kontext.add(
+    'I prefer vegetarian meals and a room on a high floor.',
+    { userId: 'guest-123' }
+  );
+
+  // Search
+  const results = await kontext.search('dietary preferences', {
+    userId: 'guest-123'
+  });
+  console.log(results.facts);
+  // ['Guest prefers vegetarian meals']
+
+  // Get formatted context
+  const context = await kontext.getContext('Prepare room for guest', {
+    userId: 'guest-123'
+  });
+  console.log(context);
+  // ## Known Facts
+  // - Guest prefers vegetarian meals
+  // - Guest prefers room on high floor
+
+  await kontext.close();
+}
+
+main();
+```
+
+## Configuration Options
+
+### Full Configuration
+
+```typescript
+const kontext = new Kontext({
+  // FalkorDB connection
+  falkordb: {
+    host: 'localhost',      // Default: localhost
+    port: 6379,             // Default: 6379
+    password: '',           // Optional
+    database: 'kontext',    // Graph name
+  },
+
+  // LLM provider
+  llm: {
+    provider: 'gemini',     // 'gemini' | 'openai' | 'anthropic' | 'ollama'
+    model: 'gemini-2.5-flash',
+    apiKey: process.env.GOOGLE_API_KEY,  // Auto-detected from env
+  },
+});
+```
+
+### LLM Providers
+
+#### Gemini (Default)
+
+```typescript
+const kontext = new Kontext({
+  llm: {
+    provider: 'gemini',
+    model: 'gemini-2.5-flash',  // or 'gemini-1.5-pro'
+    // apiKey from GOOGLE_API_KEY env var
+  }
+});
+```
+
+#### OpenAI
+
+```typescript
+const kontext = new Kontext({
+  llm: {
+    provider: 'openai',
+    model: 'gpt-4o-mini',  // or 'gpt-4o'
+    // apiKey from OPENAI_API_KEY env var
+  }
+});
+```
+
+#### Anthropic
+
+```typescript
+const kontext = new Kontext({
+  llm: {
+    provider: 'anthropic',
+    model: 'claude-3-5-sonnet-latest',
+    // apiKey from ANTHROPIC_API_KEY env var
+  }
+});
+```
+
+#### Ollama (Local)
+
+```typescript
+const kontext = new Kontext({
+  llm: {
+    provider: 'ollama',
+    model: 'llama3.2',
+    baseUrl: 'http://localhost:11434',
+  }
+});
+```
+
+## Basic Operations
+
+### Adding Memory
+
+```typescript
+// From string
+await kontext.add(
+  'The guest requested extra pillows.',
+  { userId: 'guest-123' }
+);
+
+// From messages
+await kontext.add([
+  { role: 'user', content: 'I need a wake-up call at 7am.' },
+  { role: 'assistant', content: 'Done! Wake-up call set for 7am.' }
+], { userId: 'guest-123' });
+
+// Async (fire-and-forget)
+await kontext.add(messages, { 
+  userId: 'guest-123',
+  async: true  // Returns immediately
+});
+```
+
+### Searching Memory
+
+```typescript
+const results = await kontext.search('room preferences', {
+  userId: 'guest-123',
+  limit: 10,           // Max results
+  mode: 'balanced',    // 'fast' | 'balanced' | 'deep'
+});
+
+// Results structure
+{
+  facts: ['Guest prefers quiet room', 'Guest allergic to shellfish'],
+  relations: [
+    { source: 'Guest', relation: 'PREFERS', target: 'Quiet Room', fact: '...' }
+  ],
+  entities: [
+    { name: 'Guest', type: 'Guest', summary: '' }
+  ],
+  score: 0.85
+}
+```
+
+### Getting Context
+
+```typescript
+// Returns formatted markdown string
+const context = await kontext.getContext('Help guest check out', {
+  userId: 'guest-123'
+});
+
+// Use in agent prompt
+const systemPrompt = `You are a hotel assistant.
+
+## Guest Context
+${context}
+
+Help the guest with their request.`;
+```
+
+### Deleting Memory
+
+```typescript
+// Delete all memory for a user
+await kontext.delete({ userId: 'guest-123' });
+```
+
+## Multi-Tenancy
+
+Kontext isolates data by `userId`, `agentId`, or `sessionId`:
+
+```typescript
+// User-level memory (persistent)
+await kontext.add(msg, { userId: 'user-abc' });
+
+// Agent-level memory (shared across users)
+await kontext.add(msg, { agentId: 'concierge-bot' });
+
+// Session-level memory (temporary)
+await kontext.add(msg, { sessionId: 'session-xyz' });
+```
+
+## Error Handling
+
+```typescript
+try {
+  await kontext.add(messages, { userId: 'guest' });
+} catch (error) {
+  if (error.message.includes('FalkorDB not connected')) {
+    // Database connection issue
+  } else if (error.message.includes('API key')) {
+    // LLM configuration issue
+  }
+}
+```
+
+## Next Steps
+
+- [Core Concepts](/concepts) - Understand the memory model
+- [Architecture](/architecture) - Deep dive into system design
+- [API Reference](/api) - Complete API documentation
+- [Examples](/examples) - Real-world usage patterns

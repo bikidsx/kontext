@@ -1,0 +1,333 @@
+# Examples
+
+## Basic Usage
+
+### Simple Memory Storage
+
+```typescript
+import { Kontext } from 'kontext';
+
+const kontext = new Kontext({
+  llm: { provider: 'gemini' }
+});
+
+// Store a fact
+await kontext.add(
+  'John prefers ocean-view rooms and is allergic to shellfish.',
+  { userId: 'guest-john' }
+);
+
+// Retrieve context
+const context = await kontext.getContext('Room preferences', {
+  userId: 'guest-john'
+});
+
+console.log(context);
+// ## Known Facts
+// - John prefers ocean-view rooms
+// - John is allergic to shellfish
+
+await kontext.close();
+```
+
+### Conversation Memory
+
+```typescript
+// Store a conversation
+await kontext.add([
+  { role: 'user', content: 'I need a wake-up call at 7am tomorrow.' },
+  { role: 'assistant', content: 'Done! I\'ve scheduled your wake-up call for 7am.' }
+], { userId: 'guest-john' });
+
+// Later, search for requests
+const results = await kontext.search('wake-up call', {
+  userId: 'guest-john'
+});
+
+console.log(results.facts);
+// ['Guest requested wake-up call at 7am']
+```
+
+---
+
+## Hotel Concierge Agent
+
+A complete example of an AI agent with persistent memory:
+
+```typescript
+import 'dotenv/config';
+import { Kontext } from 'kontext';
+import { GeminiClient } from 'kontext/llm/gemini';
+
+async function hotelAgent(userId: string, userMessage: string) {
+  const kontext = new Kontext({
+    llm: { provider: 'gemini' }
+  });
+  const llm = new GeminiClient();
+
+  try {
+    // 1. Retrieve relevant context
+    const context = await kontext.getContext(userMessage, { userId });
+
+    // 2. Build prompt with memory
+    const systemPrompt = `You are a hotel concierge AI.
+
+## Guest Memory
+${context}
+
+## Instructions
+- Be warm and personalized
+- Reference known preferences
+- Acknowledge new information`;
+
+    // 3. Generate response
+    const response = await llm.generateText([
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage }
+    ]);
+
+    // 4. Store conversation (async)
+    await kontext.add([
+      { role: 'user', content: userMessage },
+      { role: 'assistant', content: response }
+    ], { userId, async: true });
+
+    return response;
+  } finally {
+    await kontext.close();
+  }
+}
+
+// Usage
+const response = await hotelAgent(
+  'guest-123',
+  'I\'d like to book the spa for tomorrow afternoon.'
+);
+```
+
+---
+
+## Interactive Chat
+
+Terminal-based chat with benchmarks:
+
+```typescript
+import 'dotenv/config';
+import * as readline from 'readline';
+import { Kontext, GeminiClient } from 'kontext';
+
+const USER_ID = 'guest-demo';
+
+async function chat() {
+  const kontext = new Kontext({ llm: { provider: 'gemini' } });
+  const llm = new GeminiClient();
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  console.log('Hotel Concierge AI');
+  console.log('Type "quit" to exit, "memory" to see stored context\n');
+
+  const ask = (q: string) => new Promise<string>(r => rl.question(q, r));
+
+  try {
+    while (true) {
+      const input = await ask('\nYou: ');
+
+      if (input === 'quit') break;
+      if (input === 'memory') {
+        console.log(await kontext.getContext('all', { userId: USER_ID }));
+        continue;
+      }
+
+      // Benchmark search
+      const t1 = performance.now();
+      const context = await kontext.getContext(input, { userId: USER_ID });
+      const searchMs = performance.now() - t1;
+
+      // Benchmark LLM
+      const t2 = performance.now();
+      const response = await llm.generateText([
+        { role: 'system', content: `You are a hotel concierge.\n\n${context}` },
+        { role: 'user', content: input }
+      ]);
+      const llmMs = performance.now() - t2;
+
+      console.log(`\nAssistant: ${response}`);
+      console.log(`\n⏱️ Search: ${searchMs.toFixed(0)}ms | LLM: ${llmMs.toFixed(0)}ms`);
+
+      // Store async
+      kontext.add([
+        { role: 'user', content: input },
+        { role: 'assistant', content: response }
+      ], { userId: USER_ID, async: true });
+    }
+  } finally {
+    rl.close();
+    await kontext.close();
+  }
+}
+
+chat();
+```
+
+---
+
+## Multi-Tenant System
+
+Isolate memory per user:
+
+```typescript
+const kontext = new Kontext({ llm: { provider: 'gemini' } });
+
+// Each user has isolated memory
+await kontext.add('I prefer quiet rooms', { userId: 'alice' });
+await kontext.add('I prefer rooms with a view', { userId: 'bob' });
+
+// Queries are scoped
+const aliceContext = await kontext.getContext('preferences', { userId: 'alice' });
+// Only shows Alice's preferences
+
+const bobContext = await kontext.getContext('preferences', { userId: 'bob' });
+// Only shows Bob's preferences
+```
+
+---
+
+## Temporal Queries
+
+Query memory at a specific point in time:
+
+```typescript
+// Add facts with timestamps
+await kontext.add('Guest checked into Room 101', {
+  userId: 'guest-123',
+  validAt: new Date('2024-12-10')
+});
+
+await kontext.add('Guest moved to Room 202', {
+  userId: 'guest-123',
+  validAt: new Date('2024-12-12')
+});
+
+// Query current state
+const now = await kontext.search('room', { userId: 'guest-123' });
+// Shows Room 202
+
+// Query past state
+const past = await kontext.search('room', {
+  userId: 'guest-123',
+  asOf: new Date('2024-12-11')
+});
+// Shows Room 101
+```
+
+---
+
+## Batch Processing
+
+Process multiple conversations efficiently:
+
+```typescript
+const conversations = [
+  { userId: 'guest-1', messages: [...] },
+  { userId: 'guest-2', messages: [...] },
+  { userId: 'guest-3', messages: [...] },
+];
+
+// Process in parallel with async mode
+await Promise.all(
+  conversations.map(({ userId, messages }) =>
+    kontext.add(messages, { userId, async: true })
+  )
+);
+```
+
+---
+
+## Custom Entity Types
+
+Extend for your domain:
+
+```typescript
+// In your prompts, specify custom entity types
+const CUSTOM_ENTITY_PROMPT = `
+Extract entities from the conversation.
+
+Entity types for Restaurant domain:
+- Customer
+- Table
+- MenuItem
+- Order
+- Reservation
+- Allergy
+- Preference
+
+Rules:
+- Extract exact names as mentioned
+- Classify into most appropriate type
+`;
+
+// Use custom prompts by extending the extraction
+```
+
+---
+
+## Error Handling
+
+Robust error handling patterns:
+
+```typescript
+async function safeAdd(kontext: Kontext, messages: Message[], userId: string) {
+  try {
+    return await kontext.add(messages, { userId });
+  } catch (error) {
+    if (error.message.includes('FalkorDB')) {
+      console.error('Database error, retrying...');
+      await sleep(1000);
+      return await kontext.add(messages, { userId });
+    }
+    if (error.message.includes('API')) {
+      console.error('LLM error, using fallback...');
+      // Store raw without extraction
+      return { entities: 0, edges: 0 };
+    }
+    throw error;
+  }
+}
+```
+
+---
+
+## Integration with LangChain
+
+Use Kontext as a memory backend:
+
+```typescript
+import { Kontext } from 'kontext';
+import { ChatOpenAI } from '@langchain/openai';
+
+class KontextMemory {
+  constructor(private kontext: Kontext, private userId: string) {}
+
+  async loadMemoryVariables(input: { input: string }) {
+    const context = await this.kontext.getContext(input.input, {
+      userId: this.userId
+    });
+    return { history: context };
+  }
+
+  async saveContext(input: { input: string }, output: { output: string }) {
+    await this.kontext.add([
+      { role: 'user', content: input.input },
+      { role: 'assistant', content: output.output }
+    ], { userId: this.userId, async: true });
+  }
+}
+
+// Use with LangChain
+const memory = new KontextMemory(kontext, 'user-123');
+const context = await memory.loadMemoryVariables({ input: 'Hello' });
+```

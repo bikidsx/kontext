@@ -1,0 +1,196 @@
+# Core Concepts
+
+Kontext is built on several foundational concepts from knowledge representation, information retrieval, and cognitive science.
+
+## Memory Architecture
+
+### Episodic Memory
+
+Inspired by human episodic memory, Kontext stores raw interactions as **Episodes**—timestamped records of conversations or events.
+
+```
+Episode {
+  uuid: "ep-123"
+  content: "user: I'm allergic to shellfish"
+  validAt: 2024-12-12T10:30:00Z
+  groupId: "guest-456"
+}
+```
+
+Episodes serve as the **source of truth**—all extracted knowledge traces back to specific episodes, enabling:
+- Provenance tracking
+- Temporal reasoning
+- Conflict resolution
+
+### Semantic Memory
+
+From episodes, Kontext extracts **Entities** and **Relationships** that form a knowledge graph:
+
+```
+Entity: Guest (name: "John Smith", type: "Guest")
+Entity: Shellfish (name: "shellfish", type: "Allergen")
+Relationship: John Smith --[ALLERGIC_TO]--> Shellfish
+```
+
+This mirrors how humans consolidate episodic experiences into general knowledge.
+
+## The Knowledge Graph Model
+
+### Entities
+
+Entities are the **nouns** in your domain—people, places, things, concepts:
+
+```typescript
+interface Entity {
+  uuid: string;
+  name: string;        // "John Smith"
+  type: string;        // "Guest", "Room", "Service"
+  summary: string;     // LLM-generated description
+  groupId: string;     // Multi-tenant isolation
+  embedding?: number[]; // For vector search
+}
+```
+
+### Edges (Relationships)
+
+Edges connect entities with **facts**—human-readable statements about relationships:
+
+```typescript
+interface Edge {
+  uuid: string;
+  sourceUuid: string;  // Entity UUID
+  targetUuid: string;  // Entity UUID
+  name: string;        // "BOOKED", "PREFERS", "COMPLAINED_ABOUT"
+  fact: string;        // "John Smith booked Room 302"
+  validAt?: Date;      // When fact became true
+  invalidAt?: Date;    // When fact stopped being true
+  embedding?: number[]; // For semantic search on facts
+}
+```
+
+### Temporal Modeling
+
+Unlike static knowledge graphs, Kontext tracks **when facts are true**:
+
+```
+Fact: "Alice works at Google"
+  validAt: 2020-01-15
+  invalidAt: 2024-03-01  ← She left Google
+
+Fact: "Alice works at Microsoft"  
+  validAt: 2024-03-01
+  invalidAt: null  ← Currently true
+```
+
+Queries can specify a **reference time** to get the state of knowledge at any point:
+
+```typescript
+// What was true on Feb 1, 2024?
+await kontext.search(query, { 
+  userId: 'alice',
+  asOf: new Date('2024-02-01')
+});
+// Returns: "Alice works at Google"
+```
+
+## Retrieval Strategies
+
+### Graph + Vector Fusion
+
+Kontext combines two complementary retrieval methods:
+
+| Method | Finds | Example |
+|--------|-------|---------|
+| **Vector Search** | Semantically similar facts | "room preferences" → "prefers quiet rooms" |
+| **Graph Traversal** | Structurally connected entities | Guest → BOOKED → Room → HAS_ISSUE → AC |
+
+**Why both?** Vector search finds relevant facts, but misses structural connections. Graph traversal finds related entities even when semantically distant.
+
+```
+Query: "Help John with his stay"
+
+Vector Results:
+├── "John prefers quiet rooms" (similarity: 0.89)
+├── "John is allergic to shellfish" (similarity: 0.72)
+
+Graph Results (from "John" entity):
+├── John → BOOKED → Room 302
+├── Room 302 → HAS_ISSUE → AC not working
+├── John → COMPLAINED_ABOUT → AC
+```
+
+Combined, the agent knows John's preferences AND his current issue.
+
+### Search Modes
+
+```typescript
+// Fast: Vector search only (~10ms)
+await kontext.search(query, { mode: 'fast' });
+
+// Balanced: Vector + 1-hop graph (~30ms) [default]
+await kontext.search(query, { mode: 'balanced' });
+
+// Deep: Vector + 2-hop + full-text (~100ms)
+await kontext.search(query, { mode: 'deep' });
+```
+
+## Multi-Tenancy
+
+Kontext isolates data using **groupId**:
+
+```typescript
+// Each user has isolated memory
+await kontext.add(msg, { userId: 'guest-123' });  // groupId = 'guest-123'
+await kontext.add(msg, { agentId: 'bot-456' });   // groupId = 'bot-456'
+await kontext.add(msg, { sessionId: 'sess-789' }); // groupId = 'sess-789'
+```
+
+All queries are scoped to the specified groupId—no data leakage between tenants.
+
+## Extraction Pipeline
+
+When you call `add()`, Kontext runs an extraction pipeline:
+
+```
+Input: "I'm John, I'd like room 302. I'm allergic to shellfish."
+                          │
+                          ▼
+┌─────────────────────────────────────────┐
+│  1. EPISODE CREATION                    │
+│  Store raw content with timestamp       │
+└─────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────┐
+│  2. ENTITY EXTRACTION (LLM)             │
+│  → John (Guest)                         │
+│  → Room 302 (Room)                      │
+│  → Shellfish (Allergen)                 │
+└─────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────┐
+│  3. RELATIONSHIP EXTRACTION (LLM)       │
+│  → John BOOKED Room 302                 │
+│  → John ALLERGIC_TO Shellfish           │
+└─────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────┐
+│  4. DEDUPLICATION                       │
+│  Merge with existing entities           │
+└─────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────┐
+│  5. STORAGE                             │
+│  Write to FalkorDB                      │
+└─────────────────────────────────────────┘
+```
+
+The pipeline uses **async processing** by default—the user doesn't wait for extraction:
+
+```typescript
+await kontext.add(messages, { userId: 'guest', async: true });
+// Returns immediately, extraction happens in background
+```

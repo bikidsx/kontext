@@ -1,0 +1,336 @@
+# API Reference
+
+## Kontext Class
+
+The main entry point for all memory operations.
+
+### Constructor
+
+```typescript
+new Kontext(config: KontextConfig)
+```
+
+#### KontextConfig
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `falkordb` | `FalkorDBConfig` | No | Database connection settings |
+| `llm` | `LLMConfig` | Yes | LLM provider configuration |
+
+#### FalkorDBConfig
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `host` | `string` | `'localhost'` | FalkorDB host |
+| `port` | `number` | `6379` | FalkorDB port |
+| `password` | `string` | `''` | Authentication password |
+| `database` | `string` | `'kontext'` | Graph name |
+
+#### LLMConfig
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `provider` | `'gemini' \| 'openai' \| 'anthropic' \| 'ollama'` | Yes | LLM provider |
+| `model` | `string` | No | Model name |
+| `apiKey` | `string` | No | API key (auto-detected from env) |
+| `baseUrl` | `string` | No | Custom API endpoint |
+
+---
+
+## Methods
+
+### add()
+
+Add messages to memory. Automatically extracts entities and relationships.
+
+```typescript
+async add(
+  messages: string | Message[],
+  options: AddOptions
+): Promise<{ entities: number; edges: number }>
+```
+
+#### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `messages` | `string \| Message[]` | Content to add |
+| `options` | `AddOptions` | Configuration options |
+
+#### AddOptions
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `userId` | `string` | One of these | User identifier |
+| `agentId` | `string` | required | Agent identifier |
+| `sessionId` | `string` | | Session identifier |
+| `validAt` | `Date` | No | When the content occurred |
+| `async` | `boolean` | No | Fire-and-forget mode |
+
+#### Returns
+
+```typescript
+{
+  entities: number;  // Count of entities created/updated
+  edges: number;     // Count of relationships created
+}
+```
+
+#### Example
+
+```typescript
+// Sync (waits for completion)
+const result = await kontext.add([
+  { role: 'user', content: 'Book room 302' }
+], { userId: 'guest-123' });
+console.log(`Created ${result.entities} entities, ${result.edges} edges`);
+
+// Async (returns immediately)
+await kontext.add(messages, { userId: 'guest-123', async: true });
+```
+
+---
+
+### search()
+
+Search memory for relevant facts and relationships.
+
+```typescript
+async search(
+  query: string,
+  options: SearchOptions
+): Promise<SearchResult>
+```
+
+#### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `query` | `string` | Search query |
+| `options` | `SearchOptions` | Configuration options |
+
+#### SearchOptions
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `userId` | `string` | - | User identifier (one required) |
+| `agentId` | `string` | - | Agent identifier |
+| `sessionId` | `string` | - | Session identifier |
+| `mode` | `SearchMode` | `'balanced'` | Search depth |
+| `limit` | `number` | `20` | Max results |
+| `asOf` | `Date` | `now` | Point-in-time query |
+
+#### SearchMode
+
+| Mode | Description | Latency |
+|------|-------------|---------|
+| `'fast'` | Text matching only | ~10ms |
+| `'balanced'` | Text + graph traversal | ~30ms |
+| `'deep'` | Full hybrid search | ~100ms |
+
+#### SearchResult
+
+```typescript
+interface SearchResult {
+  facts: string[];           // Extracted facts
+  relations: Relation[];     // Entity relationships
+  entities: EntitySummary[]; // Unique entities
+  episodes: EpisodeSummary[]; // Source episodes
+  score: number;             // Relevance score (0-1)
+}
+
+interface Relation {
+  source: string;    // Source entity name
+  relation: string;  // Relationship type
+  target: string;    // Target entity name
+  fact: string;      // Human-readable fact
+  validAt?: Date;    // When fact became true
+}
+
+interface EntitySummary {
+  name: string;
+  type: string;
+  summary: string;
+}
+```
+
+#### Example
+
+```typescript
+const results = await kontext.search('room preferences', {
+  userId: 'guest-123',
+  mode: 'balanced',
+  limit: 10
+});
+
+console.log(results.facts);
+// ['Guest prefers quiet room', 'Guest prefers high floor']
+
+console.log(results.relations);
+// [{ source: 'Guest', relation: 'PREFERS', target: 'Quiet Room', ... }]
+```
+
+---
+
+### getContext()
+
+Get formatted context string for agent prompts.
+
+```typescript
+async getContext(
+  query: string,
+  options: SearchOptions
+): Promise<string>
+```
+
+#### Parameters
+
+Same as `search()`.
+
+#### Returns
+
+Markdown-formatted string:
+
+```markdown
+## Known Facts
+- Guest prefers quiet room
+- Guest is allergic to shellfish
+
+## Relationships
+- Guest → PREFERS → Quiet Room
+- Guest → ALLERGIC_TO → Shellfish
+
+## Entities
+- Guest (Guest)
+- Quiet Room (Preference)
+```
+
+#### Example
+
+```typescript
+const context = await kontext.getContext('Help guest', { userId: 'guest-123' });
+
+const prompt = `You are a hotel assistant.
+
+${context}
+
+User: ${userMessage}`;
+```
+
+---
+
+### delete()
+
+Delete all memory for a user/agent/session.
+
+```typescript
+async delete(options: {
+  userId?: string;
+  agentId?: string;
+  sessionId?: string;
+}): Promise<void>
+```
+
+#### Example
+
+```typescript
+await kontext.delete({ userId: 'guest-123' });
+```
+
+---
+
+### close()
+
+Close database connection.
+
+```typescript
+async close(): Promise<void>
+```
+
+#### Example
+
+```typescript
+try {
+  // Use kontext...
+} finally {
+  await kontext.close();
+}
+```
+
+---
+
+## Types
+
+### Message
+
+```typescript
+interface Message {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+```
+
+### Entity
+
+```typescript
+interface Entity {
+  uuid: string;
+  name: string;
+  type: string;
+  summary: string;
+  groupId: string;
+  embedding?: number[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+```
+
+### Edge
+
+```typescript
+interface Edge {
+  uuid: string;
+  sourceUuid: string;
+  targetUuid: string;
+  name: string;
+  fact: string;
+  groupId: string;
+  embedding?: number[];
+  episodes: string[];
+  validAt?: Date;
+  invalidAt?: Date;
+  createdAt: Date;
+}
+```
+
+### Episode
+
+```typescript
+interface Episode {
+  uuid: string;
+  content: string;
+  source: 'message' | 'document' | 'json';
+  groupId: string;
+  validAt: Date;
+  createdAt: Date;
+}
+```
+
+---
+
+## Hotel Domain Types
+
+Pre-defined types for hotel management:
+
+```typescript
+const HotelEntityTypes = [
+  'Guest', 'Room', 'Booking', 'Staff', 'Service',
+  'Amenity', 'Complaint', 'Request', 'Payment', 'Preference'
+] as const;
+
+const HotelRelationTypes = [
+  'BOOKED', 'STAYED_IN', 'REQUESTED', 'COMPLAINED_ABOUT',
+  'PREFERS', 'ASSIGNED_TO', 'HANDLED_BY', 'PAID_FOR',
+  'INCLUDES', 'LOCATED_IN'
+] as const;
+```
