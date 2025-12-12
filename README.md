@@ -7,11 +7,11 @@ Ultra-fast contextual memory for AI agents.
 Kontext is a memory framework that gives AI agents persistent, structured memory. It automatically extracts entities and relationships from conversations and stores them in a knowledge graph for fast retrieval.
 
 **Key Features:**
-- 🚀 Sub-30ms context retrieval
-- 🧠 Automatic entity/relationship extraction via LLM
-- ⏰ Temporal tracking (when facts become true/false)
-- 🔒 Multi-tenant isolation
-- 🔌 Simple 3-method API
+- Sub-30ms context retrieval
+- Automatic entity/relationship extraction via LLM
+- Temporal tracking (when facts become true/false)
+- Multi-tenant isolation
+- Simple 3-method API
 
 ## Quick Start
 
